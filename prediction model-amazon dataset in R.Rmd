@@ -1,0 +1,162 @@
+---
+title: "prediction model"
+author: "Sai Lakshmi. R - 22MIA1042"
+date: "`r Sys.Date()`"
+output: html_document
+---
+```{r}
+file="C:\\Users\\indum\\Downloads\\AMZN.csv"
+df=read.csv(file)
+df
+```
+
+```{r}
+df$Date=as.Date(df$Date)
+sum(is.na(df$Date))       # Should be 0
+sum(is.na(df$Close))      # Should be 0
+sum(!is.finite(df$Date))  # Should be 0
+sum(!is.finite(df$Close)) # Should be 0
+```
+```{r}
+df$Close_new <- log(df$Close)
+
+```
+
+```{r}
+adf.test(df$Close_new, alternative = "stationary")
+
+```
+```{r}
+train <- df[df$Date < as.POSIXct("2021-02-01"), ]
+test <- df[df$Date >= as.POSIXct("2021-02-01"), ]
+
+```
+```{r}
+sum(is.na(train$Close_new))      # Should be 0
+sum(is.na(test$Close_new))       # Should be 0
+sum(!is.finite(train$Close_new)) # Should be 0
+sum(!is.finite(test$Close_new))  # Should be 0
+
+```
+
+
+
+
+```{r}
+cat("Number of rows in train before cleaning:", nrow(train), "\n")
+cat("Number of rows in test before cleaning:", nrow(test), "\n")
+```
+```{r}
+cat("Number of rows with NA or non-finite values in train$Close_new:", sum(is.na(train$Close_new) | !is.finite(train$Close_new)), "\n")
+cat("Number of rows with NA or non-finite values in test$Close_new:", sum(is.na(test$Close_new) | !is.finite(test$Close_new)), "\n")
+```
+```{r}
+train_cleaned <- train[is.finite(train$Close_new) & !is.na(train$Close_new), ]
+test_cleaned <- test[is.finite(test$Close_new) & !is.na(test$Close_new), ]
+cat("Number of rows in train after cleaning:", nrow(train_cleaned), "\n")
+cat("Number of rows in test after cleaning:", nrow(test_cleaned), "\n")
+```
+
+```{r}
+# Load required libraries
+library(forecast)
+library(rpart)
+library(rugarch)
+library(ggplot2)
+
+# Print the number of rows in train and test datasets
+cat("Number of rows in train:", nrow(train), "\n")
+cat("Number of rows in test:", nrow(test), "\n")
+
+# Remove rows with NA or non-finite values from 'Close_new'
+train <- na.omit(train[is.finite(train$Close_new), ])
+test <- na.omit(test[is.finite(test$Close_new), ])
+
+# Convert 'Close_new' to numeric if necessary
+train$Close_new <- as.numeric(train$Close_new)
+test$Close_new <- as.numeric(test$Close_new)
+
+# Print the number of rows after removing NA/non-finite values
+cat("Number of rows in train after cleaning:", nrow(train), "\n")
+cat("Number of rows in test after cleaning:", nrow(test), "\n")
+
+# Ensure that the 'Close_new' column does not contain NA or non-finite values and datasets are non-empty
+if (nrow(train) > 1 && nrow(test) > 1) {
+  # ARIMA model
+  fit_arima <- auto.arima(train$Close_new)
+  if (is.null(fit_arima)) stop("ARIMA model fitting failed")
+
+  fcast_arima <- forecast(fit_arima, h = nrow(test))
+  arima_accuracy <- accuracy(fcast_arima, test$Close_new)
+
+  # Decision tree model
+  control <- rpart.control(minsplit = 4, minbucket = round(5 / 3), maxdepth = 10, cp = 0)
+  fit_tree <- rpart(Close_new ~ day + month + year + Open, data = train, control = control)
+  fcast_tree <- predict(fit_tree, test)
+  tree_accuracy <- accuracy(fcast_tree, test$Close_new)
+
+  # GARCH model
+  MSF_garch <- ugarchspec(mean.model = list(armaOrder = c(2, 5)), variance.model = list(model = 'eGARCH', garchOrder = c(1, 1)), distribution = 'std')
+  fit_garch <- ugarchfit(spec = MSF_garch, data = train$Close_new)
+  garch_pred <- ugarchforecast(fit_garch, n.ahead = length(test$Close_new), data = test$Close_new)
+  garch_accuracy <- accuracy(c(garch_pred@forecast$seriesFor), test$Close_new)
+
+  # Combine the predictions and plot
+  data <- rbind(train, test)
+  data$Pred_arima <- c(fitted(fit_arima), fcast_arima$mean)
+  data$Pred_tree <- c(predict(fit_tree, train), fcast_tree)
+  data$Pred_garch <- c(fit_garch@fit$fitted.values, garch_pred@forecast$seriesFor)
+
+  # Check for finite values before plotting
+  stopifnot(all(is.finite(data$Pred_arima)))
+  stopifnot(all(is.finite(data$Pred_tree)))
+  stopifnot(all(is.finite(data$Pred_garch)))
+
+  ggplot(data, aes(x = Date)) +
+    geom_line(aes(y = exp(Close_new), color = "Actual")) +
+    geom_line(aes(y = exp(Pred_arima), color = "ARIMA")) +
+    geom_line(aes(y = exp(Pred_tree), color = "Decision Tree")) +
+    geoms(y = exp(Pred_garch), color = "GARCH") +
+    labs(title = "Time Series Forecasts", y = "Stock Price") +
+    scale_color_discrete(name = "Model") +
+    theme_minimal()
+} else {
+  cat("The train and/or test datasets are empty or contain only NA/non-finite values", "\n")
+}
+```
+
+```{r}
+if (nrow(train) > 1 && nrow(test) > 1) {
+  # ARIMA model
+  fit_arima <- auto.arima(train$Close_new)
+  if (is.null(fit_arima)) stop("ARIMA model fitting failed")
+  
+  # Create fcast_arima
+  fcast_arima <- forecast(fit_arima, h = nrow(test))
+  arima_accuracy <- accuracy(fcast_arima, test$Close_new)
+# Combine the predictions
+data <- data.frame(
+  Date = c(train$Date, test$Date),
+  Close_new = c(train$Close_new, test$Close_new),
+  Pred_arima = c(fitted(fit_arima), fcast_arima$mean),
+  Pred_tree = c(predict(fit_tree, train), fcast_tree),
+  Pred_garch = c(fit_garch@fit$fitted.values, garch_pred@forecast$seriesFor)
+)
+
+# Check for finite values before plotting
+stopifnot(all(is.finite(data$Pred_arima)))
+stopifnot(all(is.finite(data$Pred_tree)))
+stopifnot(all(is.finite(data$Pred_garch)))
+
+# Plot the predictions
+ggplot(data, aes(x = Date)) +
+  geom_line(aes(y = exp(Close_new), color = "Actual")) +
+  geom_line(aes(y = exp(Pred_arima), color = "ARIMA")) +
+  geom_line(aes(y = exp(Pred_tree), color = "Decision Tree")) +
+  geom_line(aes(y = exp(Pred_garch), color = "GARCH")) +
+  labs(title = "Time Series Forecasts", y = "Stock Price") +
+  scale_color_manual(name = "Model", values = c("Actual" = "blue", "ARIMA" = "red", "Decision Tree" = "green", "GARCH" = "chocolate")) +
+  theme_minimal()
+}
+```
+
